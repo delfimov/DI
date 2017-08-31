@@ -1,5 +1,5 @@
 {
-    "name": "delfimov/DI",
+    "name": "delfimov/di",
     "license": "MIT",
     "type": "library",
     "description": "Fast and lightweight PSR-11 PHP Dependency Injection Container",
