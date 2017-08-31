@@ -1,0 +1,35 @@
+{
+    "name": "delfimov/DI",
+    "license": "MIT",
+    "type": "library",
+    "description": "Fast and lightweight PSR-11 PHP Dependency Injection Container",
+    "keywords": ["PHP", "Dependency Injection", "PSR-11", "Container"],
+    "homepage": "https://github.com/delfimov/supernano/",
+    "authors": [
+        {
+            "name": "Dmitry Elfimov",
+            "email": "elfimov@gmail.com"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "DElfimov\\DI\\": "./src"
+        }
+    },
+    "prefer-stable" : true,
+    "require": {
+        "php": ">=5.6.0",
+        "psr/container": "^1",
+        "psr/simple-cache": "^1"
+    },
+    "require-dev": {
+        "squizlabs/php_codesniffer": "3.*",
+        "phpunit/phpunit": "5.*"
+    },
+    "scripts" : {
+        "phpcs": "php ./vendor/bin/phpcs",
+        "test": [
+            "php ./vendor/bin/phpunit"
+        ]
+    }
+}
