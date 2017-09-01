@@ -12,5 +12,9 @@ return [
     'dt2' => [
         'instanceOf' => '\DateTime',
         'construct'  => ['now', ['instanceOf' => 'tz']]
-    ]
+    ],
+    'dt3' => [
+        'instanceOf' => '\DateTime',
+        'construct'  => ['now', ['instanceOf' => '\DateTimeZone', 'construct' => ['Asia/Pyongyang']]]
+    ],
 ];

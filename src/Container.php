@@ -3,7 +3,6 @@
 namespace DElfimov\DI;
 
 use \Psr\Container\ContainerInterface;
-use \PSR\SimpleCache\CacheInterface;
 use \DElfimov\DI\ContainerException;
 use \DElfimov\DI\NotFoundException;
 
@@ -27,18 +26,22 @@ class Container implements ContainerInterface
      */
     protected $instances = [];
 
+    /**
+     * Cache key
+     */
     const CACHE_KEY = 'di.cache';
 
-    public function __construct(array $rules = [], CacheInterface $cache = null)
+    /**
+     * Container constructor.
+     * @param array $rules
+     * @param array $cachedRules
+     */
+    public function __construct(array $rules = [], $cachedRules = null)
     {
-        if (isset($cache)) {
-            $this->rules = $cache->get(self::CACHE_KEY);
-        }
-        if (empty($this->rules) && !empty($rules)) {
+        if (isset($cachedRules)) {
+            $this->rules = $cachedRules;
+        } else {
             $this->addRules($rules);
-            if (isset($cache)) {
-                $cache->set(self::CACHE_KEY, $this->rules);
-            }
         }
     }
 
@@ -52,6 +55,14 @@ class Container implements ContainerInterface
         }
     }
 
+    /**
+     * @return array rules container
+     */
+    public function getRules()
+    {
+        return $this->rules;
+    }
+
 
     /**
      * Add a rule $rule to the class $name see https://r.je/dice.html#example3 for $rule format
@@ -61,7 +72,23 @@ class Container implements ContainerInterface
      */
     public function addRule($name, array $rule)
     {
-        $this->rules[ltrim(strtolower($name), '\\')] = array_merge($this->getRule($name), $rule);
+        // If we have a rule with the same name,
+        // or a rule applied for a parent class with 'inherit' set to true
+        // or a default rule ('*') is specified,
+        // then merge new rule with existing
+        $this->rules[$name] = array_merge($this->getRule($name), $rule);
+    }
+
+    /**
+     * Is there a rule for a specified $name
+     *
+     * @param string $name rule name
+     *
+     * @return bool
+     */
+    public function hasRule($name)
+    {
+        return isset($this->rules[$name]);
     }
 
 
@@ -73,29 +100,30 @@ class Container implements ContainerInterface
      */
     public function getRule($name)
     {
-        $lcName = strtolower(ltrim($name, '\\'));
-        if (isset($this->rules[$lcName])) {
-            return $this->rules[$lcName];
+        if ($this->hasRule($name)) {
+            return $this->rules[$name];
         }
-        
         foreach ($this->rules as $key => $rule) {
             // Find a rule which matches the class described in $name where:
-            if (empty($rule['instanceOf'])     // It's not a named instance, the rule is applied to a class name
-                && $key !== '*'                // It's not the default rule
-                && is_subclass_of($name, $key) // The rule is applied to a parent class
-                && (!array_key_exists('inherit', $rule) // And that rule should be inherited to subclasses
-                    || $rule['inherit'] === true)
-            ) {
-                return $rule;
+            if ($key !== '*' && !empty($rule['inherit'])) { // current rule is not a default and inheritance set to true
+                if (empty($rule['instanceOf'])) {
+                    $parentClass = $key;                    // It's a classname
+                } else {
+                    $parentClass = $rule['instanceOf'];     // or it's an instance of some class
+                }
+                if (is_subclass_of($name, $parentClass)) {  // The rule is applied to a parent class
+                    return $rule;
+                }
             }
         }
-        // Matching rules not found, return the default rule if set
+        // Matching rules not found, return the default rule, or an empty array
         return isset($this->rules['*']) ? $this->rules['*'] : [];
     }
 
     /**
-     * Returns a fully constructed object based on $name using $args and $share as constructor arguments if supplied
-     * caching closures for later use
+     * Returns a fully constructed object based on $name
+     * using $args and $share as constructor arguments if supplied.
+     * Will cache closures for later use
      *
      * @param string $name class name
      * @param array $args arguments
@@ -105,12 +133,13 @@ class Container implements ContainerInterface
      */
     public function get($name, array $args = [], array $share = [])
     {
-        // If it's a shared instance, then return it. It's faster then calling a closure.
+        // If it's a shared instance - return it. It's faster than calling a closure.
         if (!empty($this->instances[$name])) {
             return $this->instances[$name];
         }
 
         // If closure is not cached, then create a closure for creating the object
+        // this should only ever be done once per class and get cached
         if (empty($this->cache[$name])) {
             $this->cache[$name] = $this->getClosure($name, $this->getRule($name));
         }
@@ -119,6 +148,13 @@ class Container implements ContainerInterface
         return $this->cache[$name]($args, $share);
     }
 
+    /**
+     * Is specified $name could be resolved using DI Container.
+     *
+     * @param string $name
+     *
+     * @return bool
+     */
     public function has($name)
     {
         $rule = $this->getRule($name);
@@ -136,32 +172,54 @@ class Container implements ContainerInterface
      * @param array $rule rule
      *
      * @return mixed
+     * @throws NotFoundException
      */
     private function getClosure($name, array $rule)
     {
-        // Reflect the class and constructor, this should only ever be done once per class and get cached
-        $class = new \ReflectionClass(isset($rule['instanceOf']) ? $rule['instanceOf'] : $name);
-        $constructor = $class->getConstructor();
-
-        // Create parameter generating function in order to cache reflection on the parameters.
-        // This way $reflect->getParameters() only ever gets called once
-        if ($constructor) {
-            $params = $this->getParams($constructor, $rule);
+        if (isset($rule['instanceOf'])) {
+            $className = $rule['instanceOf'];
         } else {
-            $params = null;
+            $className = $name;
         }
 
-        // Get a closure based on the type of object being created: Shared, normal or constructorless
+        if (!empty($rule['static'])) {
+            return function (array $args, array $share) use ($className, $rule) {
+                try {
+                    return $className::$rule['static'](...$args);
+                } catch (\ReflectionException $Exception) {
+                    throw new NotFoundException('Class "' . $className . '" not found."');
+                }
+            };
+/*            $rfl = new \ReflectionMethod($this->instances[$name], $rule['static']);
+            $this->instances[$name] = $rfl->invokeArgs($this->instances[$name], $params($args, $share));*/
+        };
+
+        // Try to reflect requested class
+        try {
+            $class = new \ReflectionClass($className);
+        } catch (\ReflectionException $Exception) {
+            throw new NotFoundException('Class "' . $className . '" not found."');
+        }
+        // get constructor
+        $constructor = $class->getConstructor();
+
+        if (empty($constructor)) {
+            $params = null;
+        } else {
+            // Create parameter generating function in order to cache reflection on the parameters.
+            // This way $reflect->getParameters() only ever gets called once
+            $params = $this->getParams($constructor, $rule);
+        }
+
+        // Get a closure based on the type of object being created: normal or constructorless
         if (!empty($rule['shared'])) {
-            $closure = function (array $args, array $share) use ($class, $name, $constructor, $params, $rule) {
+            $closure = function (array $args, array $share) use ($class, $name, $constructor, $params) {
                 // Shared instance: create the class without calling the constructor
-                // (and write to \$name and $name, see issue #68)
-                $this->instances[$name] = $this->instances[ltrim($name, '\\')] = $class->newInstanceWithoutConstructor();
-                if (!empty($rule['static'])) {
-                    // TODO: rewrite static dependencies. Must be avialable for any rules, not for 'shared' only
-                    $rfl = new \ReflectionMethod($this->instances[$name], $rule['static']);
-                    $this->instances[$name] = $rfl->invokeArgs($this->instances[$name], $params($args, $share));
-                } elseif ($constructor) {
+                // and write to instances cache as '\name' and 'name'
+                $instanceName = ltrim($name, '\\');
+                $this->instances[$instanceName] = $class->newInstanceWithoutConstructor();
+                $this->instances['\\' . $instanceName] = $this->instances[$instanceName];
+                if (!empty($constructor)) {
                     // Now call this constructor after constructing all the dependencies.
                     // This avoids problems with cyclic references (issue #7)
                     $constructor->invokeArgs($this->instances[$name], $params($args, $share));
@@ -217,7 +275,7 @@ class Container implements ContainerInterface
      *
      * @param mixed $param params
      * @param array $share shared parameters
-     * @param bool  $createFromString
+     * @param bool  $createFromString array with 'instanceOf' found, should try to initialize matching class
      *
      * @return mixed
      */
@@ -242,7 +300,7 @@ class Container implements ContainerInterface
                 return $this->get($param['instanceOf'], array_merge($args, $share));
             }
         } elseif (is_array($param)) {
-            // Recursively search for 'instance' keys in $param
+            // Recursively search for 'instanceOf' keys in $param
             foreach ($param as &$value) {
                 $value = $this->expand($value, $share);
             }
@@ -271,21 +329,22 @@ class Container implements ContainerInterface
          */
         foreach ($method->getParameters() as $param) {
             $substitution = false;
-            $class = false;
-            if ($param->getClass()) {
-                $class = $param->getClass()->name;
-                if (isset($rule['substitutions']) && isset($rule['substitutions'][$class])) {
-                    $substitution = $rule['substitutions'][$class];
+            $className = false;
+            $class = $param->getClass();
+            if (isset($class)) {
+                $className = $class->name;
+                if (isset($rule['substitutions']) && isset($rule['substitutions'][$className])) {
+                    $substitution = $rule['substitutions'][$className];
                 }
             }
-            $paramInfo[] = [$class, $param, $substitution];
+            $paramInfo[] = [$className, $param, $substitution];
         }
 
-        // Return a closure that uses the cached information to generate the arguments for the method
+        // Return a closure that uses cached information to generate the arguments for the method
         return function (array $args, array $share = []) use ($paramInfo, $rule) {
             // Now merge all the possible parameters: user-defined in the rule via construct,
             // shared instances and the $args argument from $di->get();
-            if ($share || isset($rule['construct'])) {
+            if (isset($rule['construct']) || !empty($share)) {
                 $args = array_merge(
                     $args,
                     isset($rule['construct']) ? $this->expand($rule['construct'], $share) : [],
